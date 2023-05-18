@@ -1,8 +1,7 @@
 use rustengun::*;
 
-use anyhow::{bail, Context};
+use anyhow::bail;
 use std::io::StdoutLock;
-use std::io::Write;
 
 use serde::{Deserialize, Serialize};
 
@@ -33,31 +32,21 @@ impl Node<(), Payload> for GenerateNode {
         })
     }
     fn step(&mut self, input: Message<Payload>, stdout: &mut StdoutLock) -> anyhow::Result<()> {
-        let body = match input.body.payload {
-            Payload::Generate { .. } => {
-                let guid = format!("{}-{}", self.node, self.id);
-                let body = Body {
-                    id: Some(self.id),
-                    in_reply_to: input.body.id,
-                    payload: Payload::GenerateOk { guid },
-                };
-                Some(body)
-            }
+        let payload = match input.body.payload {
+            Payload::Generate { .. } => Payload::GenerateOk {
+                guid: format!("{}-{}", self.node, self.id),
+            },
             Payload::GenerateOk { .. } => bail!("Unexpected GenerateOk"),
         };
 
-        if let Some(body) = body {
-            let reply = Message {
-                src: input.dst,
-                dst: input.src,
-                body,
-            };
-            serde_json::to_writer(&mut *stdout, &reply).context("Serialize responce")?;
-            stdout.write_all(b"\n").context("Write newline")?;
-            self.id += 1;
-        }
+        self.reply(input, stdout, payload)?;
 
         Ok(())
+    }
+    fn get_id(&mut self) -> usize {
+        let mid = self.id;
+        self.id += 1;
+        mid
     }
 }
 

@@ -59,6 +59,32 @@ pub trait Node<S, Payload> {
     where
         Self: Sized;
     fn step(&mut self, input: Message<Payload>, stdout: &mut StdoutLock) -> anyhow::Result<()>;
+
+    fn get_id(&mut self) -> usize;
+
+    fn reply(
+        &mut self,
+        req: Message<Payload>,
+        stdout: &mut StdoutLock,
+        payload: Payload,
+    ) -> anyhow::Result<()>
+    where
+        Payload: Serialize,
+    {
+        let msg = Message {
+            src: req.dst,
+            dst: req.src,
+            body: Body {
+                id: Some(self.get_id()),
+                in_reply_to: req.body.id,
+                payload,
+            },
+        };
+
+        serde_json::to_writer(&mut *stdout, &msg).context("Serialize responce")?;
+        stdout.write_all(b"\n").context("Write newline")?;
+        Ok(())
+    }
 }
 
 pub fn main_loop<S, N, Payload>(state: S) -> anyhow::Result<()>

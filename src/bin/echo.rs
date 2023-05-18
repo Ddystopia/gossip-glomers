@@ -1,8 +1,6 @@
 use rustengun::*;
 
-use anyhow::Context;
 use std::io::StdoutLock;
-use std::io::Write;
 
 use serde::{Deserialize, Serialize};
 
@@ -26,31 +24,25 @@ impl Node<(), Payload> for EchoNode {
         Ok(EchoNode { id: 1 })
     }
 
-    fn step(&mut self, input: Message<Payload>, stdout: &mut StdoutLock) -> anyhow::Result<()> {
-        let body = match input.body.payload {
-            Payload::Echo { echo } => {
-                let body = Body {
-                    id: Some(self.id),
-                    in_reply_to: input.body.id,
-                    payload: Payload::EchoOk { echo },
-                };
-                Some(body)
-            }
+    fn step(&mut self, mut input: Message<Payload>, stdout: &mut StdoutLock) -> anyhow::Result<()> {
+        let payload = match &mut input.body.payload {
+            Payload::Echo { echo } => Some(Payload::EchoOk {
+                echo: std::mem::take(echo),
+            }),
             Payload::EchoOk { .. } => None,
         };
 
-        if let Some(body) = body {
-            let reply = Message {
-                src: input.dst,
-                dst: input.src,
-                body,
-            };
-            serde_json::to_writer(&mut *stdout, &reply).context("Serialize responce")?;
-            stdout.write_all(b"\n").context("Write newline")?;
-            self.id += 1;
+        if let Some(payload) = payload {
+            self.reply(input, stdout, payload)?;
         }
 
         Ok(())
+    }
+
+    fn get_id(&mut self) -> usize {
+        let mid = self.id;
+        self.id += 1;
+        mid
     }
 }
 
