@@ -3,7 +3,7 @@ use rustengun::{
     *,
 };
 
-use std::io::Write;
+use std::{io::Write, sync::mpsc::Sender};
 
 use serde::{Deserialize, Serialize};
 
@@ -39,7 +39,7 @@ where
         Ok(())
     }
 
-    fn with_initial_state(state: State<W>) -> Self {
+    fn with_initial_state(state: State<W>, _tx: Sender<Message<IPayload>>) -> Self {
         EchoNode { state }
     }
 

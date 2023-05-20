@@ -1,3 +1,5 @@
+use std::sync::mpsc::Sender;
+
 use crate::*;
 
 pub struct State<W> {
@@ -130,7 +132,7 @@ impl BodyDTO {
 }
 
 pub trait Node<IP, OP, W> {
-    fn with_initial_state(state: State<W>) -> Self
+    fn with_initial_state(state: State<W>, tx: Sender<Message<IP>>) -> Self
     where
         Self: Sized;
 
