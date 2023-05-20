@@ -1,6 +1,5 @@
 use rustengun::*;
 
-use anyhow::bail;
 use std::io::StdoutLock;
 
 use serde::{Deserialize, Serialize};
@@ -8,48 +7,56 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
-pub enum Payload {
+pub enum IPayload {
+    Generate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+pub enum OPayload {
     GenerateOk {
         #[serde(rename = "id")]
         guid: String,
     },
-    Generate,
 }
 
 pub struct GenerateNode {
-    pub node: String,
-    pub id: usize,
+    pub name: String,
+    pub generated_id_counter: usize,
 }
 
-impl Node<(), Payload> for GenerateNode {
-    fn from_init(_init_state: (), init: Init) -> anyhow::Result<Self>
+impl NodeLogic<IPayload, OPayload> for GenerateNode {
+    fn from_init(init: Init) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
         Ok(GenerateNode {
-            node: init.node_id,
-            id: 1,
+            name: init.node_id,
+            generated_id_counter: 0,
         })
     }
-    fn step(&mut self, input: Message<Payload>, stdout: &mut StdoutLock) -> anyhow::Result<()> {
+
+    fn step(
+        &mut self,
+        input: Message<IPayload>,
+        responder: &mut Responder<StdoutLock>,
+    ) -> anyhow::Result<()> {
         let payload = match input.body.payload {
-            Payload::Generate { .. } => Payload::GenerateOk {
-                guid: format!("{}-{}", self.node, self.id),
+            IPayload::Generate { .. } => OPayload::GenerateOk {
+                guid: format!("{}-{}", self.name, {
+                    self.generated_id_counter += 1;
+                    self.generated_id_counter
+                }),
             },
-            Payload::GenerateOk { .. } => bail!("Unexpected GenerateOk"),
         };
 
-        self.reply(input, stdout, payload)?;
+        responder.reply(input, payload)?;
 
         Ok(())
-    }
-    fn get_id(&mut self) -> usize {
-        let mid = self.id;
-        self.id += 1;
-        mid
     }
 }
 
 fn main() -> anyhow::Result<()> {
-    main_loop::<_, GenerateNode, _>(())
+    main_loop::<GenerateNode, _, _>()
 }

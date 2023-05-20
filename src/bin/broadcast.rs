@@ -8,82 +8,82 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
-pub enum Payload {
+enum IPayload {
     Broadcast {
         message: usize,
     },
-    BroadcastOk,
     Read,
+    Topology {
+        topology: HashMap<String, Vec<String>>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+#[allow(clippy::enum_variant_names)]
+enum OPayload {
+    BroadcastOk,
     ReadOk {
         messages: HashSet<usize>,
         // messages: Vec<usize>,
     },
-    Topology {
-        topology: HashMap<String, Vec<String>>,
-    },
     TopologyOk,
 }
 
-pub struct BroadcastNode {
-    pub node: String,
-    pub id: usize,
+struct BroadcastNode {
+    pub name: String,
     pub messages: HashSet<usize>,
-    pub known: HashMap<String, HashSet<usize>>,
-    pub msg_communicated: HashMap<String, HashSet<usize>>,
+    pub not_known_to_neiborgs: HashMap<String, HashSet<usize>>,
     pub neighbors: Vec<String>,
 }
 
-impl Node<(), Payload> for BroadcastNode {
-    fn from_init(_init_state: (), init: Init) -> anyhow::Result<Self>
+impl NodeLogic<IPayload, OPayload> for BroadcastNode {
+    fn from_init(init: Init) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
         Ok(BroadcastNode {
-            node: init.node_id,
-            id: 1,
+            name: init.node_id,
             messages: HashSet::default(),
-            known: init
+            not_known_to_neiborgs: init
                 .node_ids
                 .into_iter()
                 .map(|nid| (nid, HashSet::default()))
                 .collect(),
-            msg_communicated: HashMap::default(),
             neighbors: Vec::new(),
         })
     }
-    fn step(&mut self, mut input: Message<Payload>, stdout: &mut StdoutLock) -> anyhow::Result<()> {
+    fn step(
+        &mut self,
+        mut input: Message<IPayload>,
+        responder: &mut Responder<StdoutLock>,
+    ) -> anyhow::Result<()> {
         // TODO: try reply in match arms and remove that mut reference
         let payload = match &mut input.body.payload {
-            Payload::Broadcast { message } => {
+            IPayload::Broadcast { message } => {
                 self.messages.insert(*message);
-                Some(Payload::BroadcastOk)
+                Some(OPayload::BroadcastOk)
             }
-            Payload::Read => Some(Payload::ReadOk {
+            IPayload::Read => Some(OPayload::ReadOk {
                 messages: self.messages.clone(),
             }),
-            Payload::Topology { topology } => {
-                if let Some(topology) = std::mem::take(&mut topology.remove(&self.node)) {
+            IPayload::Topology { topology } => {
+                if let Some(topology) = std::mem::take(&mut topology.remove(&self.name)) {
                     self.neighbors = topology;
                 }
-                Some(Payload::TopologyOk)
+                Some(OPayload::TopologyOk)
             }
-            Payload::TopologyOk | Payload::BroadcastOk | Payload::ReadOk { .. } => None,
         };
 
         if let Some(payload) = payload {
-            self.reply(input, stdout, payload)?;
+            responder.reply(input, payload)?;
         }
 
         Ok(())
     }
-
-    fn get_id(&mut self) -> usize {
-        let mid = self.id;
-        self.id += 1;
-        mid
-    }
 }
 
 fn main() -> anyhow::Result<()> {
-    main_loop::<_, BroadcastNode, _>(())
+    main_loop::<BroadcastNode, _, _>()
 }

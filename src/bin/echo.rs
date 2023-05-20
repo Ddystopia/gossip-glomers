@@ -7,8 +7,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
-pub enum Payload {
+pub enum IPayload {
     Echo { echo: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+pub enum OPayload {
     EchoOk { echo: String },
 }
 
@@ -16,36 +22,32 @@ pub struct EchoNode {
     pub id: usize,
 }
 
-impl Node<(), Payload> for EchoNode {
-    fn from_init(_init_state: (), _init: Init) -> anyhow::Result<Self>
+impl NodeLogic<IPayload, OPayload> for EchoNode {
+    fn from_init(_init: Init) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
         Ok(EchoNode { id: 1 })
     }
-
-    fn step(&mut self, mut input: Message<Payload>, stdout: &mut StdoutLock) -> anyhow::Result<()> {
+fn step(
+        &mut self,
+        mut input: Message<IPayload>,
+        responder: &mut Responder<StdoutLock>,
+    ) -> anyhow::Result<()> {
         let payload = match &mut input.body.payload {
-            Payload::Echo { echo } => Some(Payload::EchoOk {
+            IPayload::Echo { echo } => Some(OPayload::EchoOk {
                 echo: std::mem::take(echo),
             }),
-            Payload::EchoOk { .. } => None,
         };
 
         if let Some(payload) = payload {
-            self.reply(input, stdout, payload)?;
+            responder.reply(input, payload)?;
         }
 
         Ok(())
     }
-
-    fn get_id(&mut self) -> usize {
-        let mid = self.id;
-        self.id += 1;
-        mid
-    }
 }
 
 fn main() -> anyhow::Result<()> {
-    main_loop::<_, EchoNode, _>(())
+    main_loop::<EchoNode, _, _>()
 }
