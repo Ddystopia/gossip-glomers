@@ -2,7 +2,7 @@ use crate::*;
 
 pub struct State<W> {
     pub name: String,
-    pub neighbors: Vec<String>,
+    pub node_ids: Vec<String>,
     req: MessageDTO,
     id_counter: usize,
     writer: W,
@@ -17,7 +17,7 @@ where
         let InitPayload::Init(payload) = payload;
         State {
             name: payload.node_id,
-            neighbors: payload.node_ids,
+            node_ids: payload.node_ids,
             req,
             writer,
             id_counter: 0,
@@ -28,7 +28,7 @@ where
         let (payload, req) = MessageDTO::from(req);
         let state = State {
             name: self.name,
-            neighbors: self.neighbors,
+            node_ids: self.node_ids,
             req,
             writer: self.writer,
             id_counter: self.id_counter,
@@ -86,6 +86,11 @@ where
         self.writer.write_all(b"\n").context("Write newline")?;
         Ok(())
     }
+
+    pub fn get_sender(&self) -> &str {
+        &self.req.src
+    }
+
 }
 
 struct MessageDTO {

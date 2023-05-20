@@ -1,17 +1,20 @@
-use rustengun::*;
+use rustengun::{
+    node::{Node, State},
+    *,
+};
 
-use std::io::StdoutLock;
+use std::io::{StdoutLock, Write};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum IPayload {
     Generate,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Serialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum OPayload {
@@ -21,42 +24,41 @@ pub enum OPayload {
     },
 }
 
-pub struct GenerateNode {
-    pub name: String,
-    pub generated_id_counter: usize,
+pub struct GenerateNode<W> {
+    state: State<W>,
+    generated_id_counter: usize,
 }
 
-impl NodeLogic<IPayload, OPayload> for GenerateNode {
-    fn from_init(init: Init) -> anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(GenerateNode {
-            name: init.node_id,
-            generated_id_counter: 0,
-        })
-    }
-
-    fn step(
-        &mut self,
-        input: Message<IPayload>,
-        responder: &mut Responder<StdoutLock>,
-    ) -> anyhow::Result<()> {
-        let payload = match input.body.payload {
+impl<W> Node<IPayload, OPayload, W> for GenerateNode<W>
+where
+    W: Write,
+{
+    fn step(&mut self, payload: IPayload) -> anyhow::Result<()> {
+        let payload = match payload {
             IPayload::Generate { .. } => OPayload::GenerateOk {
-                guid: format!("{}-{}", self.name, {
+                guid: format!("{}-{}", self.state.name, {
                     self.generated_id_counter += 1;
                     self.generated_id_counter
                 }),
             },
         };
 
-        responder.reply(input, payload)?;
+        self.state.reply(payload)?;
 
         Ok(())
+    }
+    fn with_initial_state(state: State<W>) -> Self {
+        GenerateNode {
+            state,
+            generated_id_counter: 0,
+        }
+    }
+
+    fn get_state(&mut self) -> &mut State<W> {
+        &mut self.state
     }
 }
 
 fn main() -> anyhow::Result<()> {
-    main_loop::<GenerateNode, _, _>()
+    main_loop::<GenerateNode<StdoutLock>, _, _>()
 }

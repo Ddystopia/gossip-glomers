@@ -1,6 +1,7 @@
-mod node;
+pub mod node;
 
 use node::*;
+
 use std::io::{BufRead, Lines, StdinLock, StdoutLock, Write};
 
 use anyhow::Context;
@@ -33,6 +34,7 @@ pub enum InitPayload {
 }
 
 #[derive(Serialize)]
+#[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 enum InitOk {
     InitOk,

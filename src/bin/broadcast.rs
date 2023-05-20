@@ -1,14 +1,22 @@
+use rustengun::node::{Node, State};
 use rustengun::*;
 
 use std::collections::{HashMap, HashSet};
-use std::io::StdoutLock;
+use std::io::{StdoutLock, Write};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 enum IPayload {
+    GossipSignal, // TODO: verify that is sent by the same node
+    Gossip {
+        messages: HashSet<usize>,
+    },
+    GossipOk {
+        messages: HashSet<usize>,
+    },
     Broadcast {
         message: usize,
     },
@@ -18,11 +26,17 @@ enum IPayload {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Serialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 #[allow(clippy::enum_variant_names)]
 enum OPayload {
+    Gossip {
+        messages: HashSet<usize>,
+    },
+    GossipOk {
+        messages: HashSet<usize>,
+    },
     BroadcastOk,
     ReadOk {
         messages: HashSet<usize>,
@@ -31,45 +45,84 @@ enum OPayload {
     TopologyOk,
 }
 
-struct BroadcastNode {
-    pub name: String,
+struct BroadcastNode<W> {
+    state: State<W>,
+    pub neighbors: Vec<String>,
     pub messages: HashSet<usize>,
     pub not_known_to_neiborgs: HashMap<String, HashSet<usize>>,
-    pub neighbors: Vec<String>,
 }
 
-impl NodeLogic<IPayload, OPayload> for BroadcastNode {
-    fn from_init(init: Init) -> anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(BroadcastNode {
-            name: init.node_id,
+impl<W> Node<IPayload, OPayload, W> for BroadcastNode<W>
+where
+    W: Write,
+{
+    fn with_initial_state(state: State<W>) -> Self {
+        let not_known_to_neiborgs = state
+            .node_ids
+            .iter()
+            .cloned()
+            .map(|nid| (nid, HashSet::default()))
+            .collect();
+
+        BroadcastNode {
+            state,
             messages: HashSet::default(),
-            not_known_to_neiborgs: init
-                .node_ids
-                .into_iter()
-                .map(|nid| (nid, HashSet::default()))
-                .collect(),
-            neighbors: Vec::new(),
-        })
+            neighbors: Vec::default(),
+            not_known_to_neiborgs,
+        }
     }
-    fn step(
-        &mut self,
-        mut input: Message<IPayload>,
-        responder: &mut Responder<StdoutLock>,
-    ) -> anyhow::Result<()> {
-        // TODO: try reply in match arms and remove that mut reference
-        let payload = match &mut input.body.payload {
+
+    fn get_state(&mut self) -> &mut State<W> {
+        &mut self.state
+    }
+
+    fn step(&mut self, payload: IPayload) -> anyhow::Result<()> {
+        let payload = match payload {
+            IPayload::GossipSignal => {
+                for (neiborg, not_known) in &self.not_known_to_neiborgs {
+                    self.state.send_to::<OPayload>(
+                        neiborg.to_string(),
+                        OPayload::Gossip {
+                            messages: not_known.clone(),
+                        },
+                    )?;
+                }
+                None
+            }
+
+            IPayload::Gossip { messages } => {
+                let sender = self.state.get_sender();
+                for message in messages.clone() {
+                    self.messages.insert(message);
+                    self.not_known_to_neiborgs
+                        .get_mut(sender)
+                        .map(|not_known| not_known.remove(&message));
+                }
+
+                //  TODO: maybe checksum or if of some sort
+                Some(OPayload::GossipOk { messages })
+            }
+            IPayload::GossipOk { messages } => {
+                let sender = self.state.get_sender();
+                for message in messages {
+                    self.not_known_to_neiborgs
+                        .get_mut(sender)
+                        .map(|not_known| not_known.remove(&message));
+                }
+                None
+            }
             IPayload::Broadcast { message } => {
-                self.messages.insert(*message);
+                self.messages.insert(message);
+                for neiborg in self.not_known_to_neiborgs.values_mut() {
+                    neiborg.insert(message);
+                }
                 Some(OPayload::BroadcastOk)
             }
             IPayload::Read => Some(OPayload::ReadOk {
                 messages: self.messages.clone(),
             }),
-            IPayload::Topology { topology } => {
-                if let Some(topology) = std::mem::take(&mut topology.remove(&self.name)) {
+            IPayload::Topology { mut topology } => {
+                if let Some(topology) = topology.remove(&self.state.name) {
                     self.neighbors = topology;
                 }
                 Some(OPayload::TopologyOk)
@@ -77,7 +130,7 @@ impl NodeLogic<IPayload, OPayload> for BroadcastNode {
         };
 
         if let Some(payload) = payload {
-            responder.reply(input, payload)?;
+            self.state.reply(payload)?;
         }
 
         Ok(())
@@ -85,5 +138,5 @@ impl NodeLogic<IPayload, OPayload> for BroadcastNode {
 }
 
 fn main() -> anyhow::Result<()> {
-    main_loop::<BroadcastNode, _, _>()
+    main_loop::<BroadcastNode<StdoutLock>, _, _>()
 }
