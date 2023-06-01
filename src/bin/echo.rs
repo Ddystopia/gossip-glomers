@@ -1,4 +1,4 @@
-use rustengun::{
+use gossip_glomers::{
     node::{Node, State},
     *,
 };

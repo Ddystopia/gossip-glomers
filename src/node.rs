@@ -44,7 +44,7 @@ where
         payload
     }
 
-    fn generate_message_id(&mut self) -> usize {
+    pub fn generate_id(&mut self) -> usize {
         self.id_counter += 1;
         self.id_counter
     }
@@ -59,7 +59,7 @@ where
             src: self.name.clone(),
             dst: self.req.src.clone(),
             body: Body {
-                id: Some(self.generate_message_id()),
+                id: Some(self.generate_id()),
                 in_reply_to: self.req.body.id,
                 payload,
             },
@@ -78,7 +78,7 @@ where
             src: self.name.clone(),
             dst,
             body: Body {
-                id: Some(self.generate_message_id()),
+                id: Some(self.generate_id()),
                 in_reply_to: None,
                 payload,
             },
