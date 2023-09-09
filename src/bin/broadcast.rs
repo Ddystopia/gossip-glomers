@@ -1,5 +1,5 @@
-use rustengun::node::{Node, State};
-use rustengun::*;
+use gossip_glomers::node::{Node, State};
+use gossip_glomers::*;
 
 use std::collections::{HashMap, HashSet};
 use std::io::{StdoutLock, Write};
