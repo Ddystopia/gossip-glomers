@@ -1,5 +1,5 @@
 use gossip_glomers::node::{Node, State};
-use gossip_glomers::*;
+use gossip_glomers::{main_loop, BodySerde, MessageSerde, NodeId};
 
 use std::collections::{HashMap, HashSet};
 use std::io::{StdoutLock, Write};
@@ -27,7 +27,7 @@ enum IPayload {
     },
     Read,
     Topology {
-        topology: HashMap<String, Vec<String>>,
+        topology: HashMap<NodeId, Vec<NodeId>>,
     },
 }
 
@@ -52,24 +52,48 @@ enum OPayload {
 
 struct BroadcastNode<W> {
     state: State<W>,
-    pub neighbors: Vec<String>,
-    pub messages: HashSet<usize>,
-    pub not_known_to_neiborgs: HashMap<String, HashSet<usize>>,
+    neighbors: Vec<NodeId>,
+    messages: HashSet<usize>,
+    not_known_to_neiborgs: HashMap<NodeId, HashSet<usize>>,
+}
+
+enum Res {
+    None,
+    Reply(gossip_glomers::AtomicResponce<OPayload>),
+    Broadcast(Vec<gossip_glomers::AtomicResponce<OPayload>>),
+}
+
+impl Iterator for Res {
+    type Item = gossip_glomers::AtomicResponce<OPayload>;
+    fn next(&mut self) -> Option<Self::Item> {
+        match std::mem::replace(self, Self::None) {
+            Self::Reply(this) => Some(this),
+            Self::Broadcast(mut v) => {
+                let result = v.pop();
+                *self = Self::Broadcast(v);
+                result
+            }
+
+            Self::None => None,
+        }
+    }
 }
 
 impl<W> Node<IPayload, OPayload, W> for BroadcastNode<W>
 where
     W: Write,
 {
-    fn with_initial_state(state: State<W>, tx: Sender<Message<IPayload>>) -> Self {
-        let name = state.name.clone();
+    type Response = Res;
+
+    fn with_initial_state(state: State<W>, tx: Sender<MessageSerde<IPayload>>) -> Self {
+        let name = state.node_id().clone();
 
         thread::spawn(move || loop {
             thread::sleep(GOSSIP_INTERVAL);
-            let r = tx.send(Message {
+            let r = tx.send(MessageSerde {
                 src: name.clone(),
                 dst: name.clone(),
-                body: Body {
+                body: BodySerde {
                     id: None,
                     in_reply_to: None,
                     payload: IPayload::GossipSignal,
@@ -80,7 +104,7 @@ where
             }
         });
 
-        BroadcastNode {
+        Self {
             state,
             messages: HashSet::default(),
             neighbors: Vec::default(),
@@ -88,27 +112,29 @@ where
         }
     }
 
-    fn get_state(&mut self) -> &mut State<W> {
+    fn get_state(&self) -> &State<W> {
+        &self.state
+    }
+    fn get_state_mut(&mut self) -> &mut State<W> {
         &mut self.state
     }
 
-    fn step(&mut self, payload: IPayload) -> anyhow::Result<()> {
-        let payload = match payload {
-            IPayload::GossipSignal => {
-                for (neiborg, not_known) in self
-                    .not_known_to_neiborgs
+    fn step(&mut self, payload: IPayload) -> Self::Response {
+        match payload {
+            IPayload::GossipSignal => Res::Broadcast(
+                self.not_known_to_neiborgs
                     .iter()
                     .filter(|(_, s)| !s.is_empty())
-                {
-                    self.state.send_to::<OPayload>(
-                        neiborg.to_string(),
-                        OPayload::Gossip {
-                            messages: not_known.clone(),
-                        },
-                    )?;
-                }
-                None
-            }
+                    .map(|(neiborg, not_known)| {
+                        gossip_glomers::AtomicResponce::new(
+                            neiborg.clone(),
+                            OPayload::Gossip {
+                                messages: not_known.clone(),
+                            },
+                        )
+                    })
+                    .collect(),
+            ),
 
             IPayload::Gossip { messages } => {
                 let sender = self.state.get_sender();
@@ -119,36 +145,40 @@ where
                             not_known.insert(message);
                         }
                     };
-                    if let Some(not_known) = self.not_known_to_neiborgs.get_mut(sender) {
+                    if let Some(not_known) = self.not_known_to_neiborgs.get_mut(&sender) {
                         not_known.remove(&message);
                     }
                 }
 
                 //  TODO: maybe checksum or if of some sort
-                Some(OPayload::GossipOk { messages })
+                Res::Reply(self.state.reply(OPayload::GossipOk { messages }))
             }
+
             IPayload::GossipOk { messages } => {
                 let sender = self.state.get_sender();
                 for message in messages {
                     self.not_known_to_neiborgs
-                        .get_mut(sender)
+                        .get_mut(&sender)
                         .map(|not_known| not_known.remove(&message));
                 }
-                None
+                Res::None
             }
+
             IPayload::Broadcast { message } => {
                 if self.messages.insert(message) {
                     for neiborg in self.not_known_to_neiborgs.values_mut() {
                         neiborg.insert(message);
                     }
                 }
-                Some(OPayload::BroadcastOk)
+                Res::Reply(self.state.reply(OPayload::BroadcastOk))
             }
-            IPayload::Read => Some(OPayload::ReadOk {
+
+            IPayload::Read => Res::Reply(self.state.reply(OPayload::ReadOk {
                 messages: self.messages.clone(),
-            }),
+            })),
+
             IPayload::Topology { mut topology } => {
-                if let Some(topology) = topology.remove(&self.state.name) {
+                if let Some(topology) = topology.remove(&self.state.node_id()) {
                     self.neighbors = topology;
                 }
 
@@ -163,15 +193,9 @@ where
                     unimplemented!()
                 }
 
-                Some(OPayload::TopologyOk)
+                Res::Reply(self.state.reply(OPayload::TopologyOk))
             }
-        };
-
-        if let Some(payload) = payload {
-            self.state.reply(payload)?;
         }
-
-        Ok(())
     }
 }
 

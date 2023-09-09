@@ -1,6 +1,7 @@
 use gossip_glomers::{
+    main_loop,
     node::{Node, State},
-    *,
+    MessageSerde,
 };
 
 use std::{io::Write, sync::mpsc::Sender};
@@ -29,21 +30,24 @@ impl<W> Node<IPayload, OPayload, W> for EchoNode<W>
 where
     W: Write,
 {
-    fn step(&mut self, payload: IPayload) -> anyhow::Result<()> {
+    type Response = gossip_glomers::AtomicResponce<OPayload>;
+    fn step(&mut self, payload: IPayload) -> Self::Response {
         let payload = match payload {
             IPayload::Echo { echo } => OPayload::EchoOk { echo },
         };
 
-        self.state.reply(payload)?;
-
-        Ok(())
+        self.state.reply(payload)
     }
 
-    fn with_initial_state(state: State<W>, _tx: Sender<Message<IPayload>>) -> Self {
-        EchoNode { state }
+    fn with_initial_state(state: State<W>, _tx: Sender<MessageSerde<IPayload>>) -> Self {
+        Self { state }
     }
 
-    fn get_state(&mut self) -> &mut State<W> {
+    fn get_state(&self) -> &State<W> {
+        &self.state
+    }
+
+    fn get_state_mut(&mut self) -> &mut State<W> {
         &mut self.state
     }
 }

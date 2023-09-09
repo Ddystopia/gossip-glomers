@@ -1,11 +1,15 @@
 use std::sync::mpsc::Sender;
 
-use crate::*;
+use crate::{
+    AtomicResponce, BodySerde, Context, InitPayload, MessageData, MessageSerde, NodeId, Response,
+    Serialize, Write,
+};
 
+// This is basically an Inheritance. And `State` is a bad name.
 pub struct State<W> {
-    pub name: String,
-    pub node_ids: Vec<String>,
-    req: MessageDTO,
+    node_id: NodeId,
+    node_ids: Vec<NodeId>,
+    req: MessageData,
     id_counter: usize,
     writer: W,
 }
@@ -14,22 +18,41 @@ impl<W> State<W>
 where
     W: Write,
 {
-    pub fn from(req: Message<InitPayload>, writer: W) -> State<W> {
-        let (payload, req) = MessageDTO::from(req);
+    pub fn node_id(&self) -> NodeId {
+        self.node_id.clone()
+    }
+    pub fn node_ids(&self) -> impl Iterator<Item = &NodeId> {
+        self.node_ids.iter()
+    }
+    pub fn from(req: MessageSerde<InitPayload>, writer: W) -> Self {
+        let payload = req.body.payload;
         let InitPayload::Init(payload) = payload;
-        State {
-            name: payload.node_id,
-            node_ids: payload.node_ids,
+        let node_ids = payload.node_ids.into_iter().map(NodeId).collect();
+
+        let req = MessageData {
+            src: req.src,
+            id: None,
+            in_reply_to: None,
+        };
+
+        Self {
+            node_id: NodeId(payload.node_id),
+            node_ids,
             req,
             writer,
             id_counter: 0,
         }
     }
 
-    pub fn convert<P>(self, req: Message<P>) -> (P, State<W>) {
-        let (payload, req) = MessageDTO::from(req);
-        let state = State {
-            name: self.name,
+    pub fn convert<P>(self, req: MessageSerde<P>) -> (P, Self) {
+        let payload = req.body.payload;
+        let req = MessageData {
+            src: req.src,
+            id: None,
+            in_reply_to: None,
+        };
+        let state = Self {
+            node_id: self.node_id,
             node_ids: self.node_ids,
             req,
             writer: self.writer,
@@ -38,8 +61,13 @@ where
         (payload, state)
     }
 
-    pub fn set_message<P>(&mut self, req: Message<P>) -> P {
-        let (payload, req) = MessageDTO::from(req);
+    pub fn set_message<P>(&mut self, req: MessageSerde<P>) -> P {
+        let payload = req.body.payload;
+        let req = MessageData {
+            src: req.src,
+            id: None,
+            in_reply_to: None,
+        };
         self.req = req;
         payload
     }
@@ -49,94 +77,51 @@ where
         self.id_counter
     }
 
-    // Could reply with any payload.
-    pub fn reply<OP>(&mut self, payload: OP) -> anyhow::Result<()>
+    pub fn reply<OP>(&mut self, payload: OP) -> AtomicResponce<OP> {
+        AtomicResponce::new(self.req.src.clone(), payload)
+    }
+
+    pub fn send_to<OP>(&mut self, response: impl Response<OP>) -> anyhow::Result<()>
     where
         OP: Serialize,
     {
-        // If we need to send several messages, we cannot avoid copy.
-        let msg = Message {
-            src: self.name.clone(),
-            dst: self.req.src.clone(),
-            body: Body {
-                id: Some(self.generate_message_id()),
-                in_reply_to: self.req.body.id,
-                payload,
-            },
-        };
+        for AtomicResponce {
+            recipient,
+            payload,
+            is_reply,
+        } in response.into_iter()
+        {
+            let msg = MessageSerde {
+                src: self.node_id.clone(),
+                dst: recipient,
+                body: BodySerde {
+                    id: Some(self.generate_message_id()),
+                    in_reply_to: is_reply.then(|| self.req.id.unwrap()),
+                    payload,
+                },
+            };
 
-        serde_json::to_writer(&mut self.writer, &msg).context("Serialize responce")?;
-        self.writer.write_all(b"\n").context("Write newline")?;
+            serde_json::to_writer(&mut self.writer, &msg).context("Serialize responce")?;
+
+            self.writer.write_all(b"\n").context("Write newline")?;
+        }
         Ok(())
     }
 
-    pub fn send_to<OP>(&mut self, dst: String, payload: OP) -> anyhow::Result<()>
-    where
-        OP: Serialize,
-    {
-        let msg = Message {
-            src: self.name.clone(),
-            dst,
-            body: Body {
-                id: Some(self.generate_message_id()),
-                in_reply_to: None,
-                payload,
-            },
-        };
-
-        serde_json::to_writer(&mut self.writer, &msg).context("Serialize responce")?;
-        self.writer.write_all(b"\n").context("Write newline")?;
-        Ok(())
-    }
-
-    pub fn get_sender(&self) -> &str {
-        &self.req.src
-    }
-
-}
-
-struct MessageDTO {
-    src: String,
-    #[allow(dead_code)]
-    dst: String,
-    body: BodyDTO,
-}
-
-struct BodyDTO {
-    id: Option<usize>,
-    #[allow(dead_code)]
-    in_reply_to: Option<usize>,
-}
-
-impl MessageDTO {
-    fn from<P>(msg: Message<P>) -> (P, MessageDTO) {
-        let (payload, body) = BodyDTO::from(msg.body);
-        let message = MessageDTO {
-            src: msg.src,
-            dst: msg.dst,
-            body,
-        };
-        (payload, message)
-    }
-}
-
-impl BodyDTO {
-    fn from<P>(body: Body<P>) -> (P, BodyDTO) {
-        let payload = body.payload;
-        let body = BodyDTO {
-            id: body.id,
-            in_reply_to: body.in_reply_to,
-        };
-        (payload, body)
+    pub fn get_sender(&self) -> NodeId {
+        self.req.src.clone()
     }
 }
 
 pub trait Node<IP, OP, W> {
-    fn with_initial_state(state: State<W>, tx: Sender<Message<IP>>) -> Self
+    type Response: Response<OP>;
+
+    fn step(&mut self, payload: IP) -> Self::Response;
+
+    fn with_initial_state(state: State<W>, tx: Sender<MessageSerde<IP>>) -> Self
     where
         Self: Sized;
 
-    fn step(&mut self, payload: IP) -> anyhow::Result<()>;
-
-    fn get_state(&mut self) -> &mut State<W>;
+    fn get_state(&self) -> &State<W>;
+    fn get_state_mut(&mut self) -> &mut State<W>;
 }

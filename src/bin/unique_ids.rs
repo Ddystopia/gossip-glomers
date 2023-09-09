@@ -1,9 +1,13 @@
 use gossip_glomers::{
+    main_loop,
     node::{Node, State},
-    *,
+    MessageSerde,
 };
 
-use std::{io::{StdoutLock, Write}, sync::mpsc::Sender};
+use std::{
+    io::{StdoutLock, Write},
+    sync::mpsc::Sender,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -33,28 +37,31 @@ impl<W> Node<IPayload, OPayload, W> for GenerateNode<W>
 where
     W: Write,
 {
-    fn step(&mut self, payload: IPayload) -> anyhow::Result<()> {
+    type Response = gossip_glomers::AtomicResponce<OPayload>;
+    fn step(&mut self, payload: IPayload) -> Self::Response {
         let payload = match payload {
             IPayload::Generate { .. } => OPayload::GenerateOk {
-                guid: format!("{}-{}", self.state.name, {
+                guid: format!("{}-{}", self.state.node_id(), {
                     self.generated_id_counter += 1;
                     self.generated_id_counter
                 }),
             },
         };
 
-        self.state.reply(payload)?;
-
-        Ok(())
+        self.state.reply(payload)
     }
-    fn with_initial_state(state: State<W>, _tx: Sender<Message<IPayload>>) -> Self {
-        GenerateNode {
+    fn with_initial_state(state: State<W>, _tx: Sender<MessageSerde<IPayload>>) -> Self {
+        Self {
             state,
             generated_id_counter: 0,
         }
     }
 
-    fn get_state(&mut self) -> &mut State<W> {
+    fn get_state(&self) -> &State<W> {
+        &self.state
+    }
+
+    fn get_state_mut(&mut self) -> &mut State<W> {
         &mut self.state
     }
 }
